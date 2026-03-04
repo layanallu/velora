@@ -2,16 +2,20 @@
 //  VeloraApp.swift
 //  Velora
 //
-//  Created by Layan on 05/09/1447 AH.
+//  Created by LAYAN  on 03/09/1447 AH.
 //
 
 import SwiftUI
 
 @main
 struct VeloraApp: App {
+    @StateObject private var persistence = PersistenceStore()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environmentObject(persistence)
+                .preferredColorScheme(.light)
         }
     }
 }
