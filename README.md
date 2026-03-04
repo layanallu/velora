@@ -210,22 +210,6 @@ This helps users maintain smoother timing and build speaking confidence.
 
 ---
 
-### Rhythm Pacing
-
-![Rhythm](screenshots/rhythm.png)
-
-Speech is paced with a subtle visual rhythm.
-
----
-
-### Feedback
-
-![Feedback](screenshots/feedback.png)
-
-Supportive feedback helps users reflect on their speaking performance.
-
----
-
 # 🚀 Future Improvements
 
 Possible future directions include:
