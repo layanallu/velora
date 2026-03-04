@@ -66,17 +66,14 @@ Structured reading practice.
 **Real-Life Scenarios**
 Context-based speaking simulations.
 
-### 4️⃣ Breathing Ritual
-A short guided breathing experience that helps users regulate before speaking.
-
-Velora visually expands and contracts with each breath.
-
-### 5️⃣ Scenario Start
-A gentle transition into the speaking session.
-
-### 6️⃣ Live Speech Session
+### 4️⃣ Live Speech Session
 
 The speaking experience unfolds across three phases:
+
+**Breathing Ritual**
+
+A short guided breathing experience that helps users regulate before speaking.
+Velora visually expands and contracts with each breath.
 
 **Easy Onset**
 
@@ -86,11 +83,7 @@ Users practice beginning speech gently to reduce tension.
 
 Speech is paced through subtle visual rhythm cues.
 
-**Feedback**
-
-Supportive insights help users reflect on their performance.
-
-### 7️⃣ Feedback Screen
+### 5️⃣ Feedback Screen
 
 Users receive gentle feedback including:
 
