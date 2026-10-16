@@ -50,6 +50,11 @@ struct EasyOnsetView: View {
     @State private var lastTutorialTick: Date = Date()
 
     @State private var isListening: Bool = false
+    @State private var isStartingMicrophone: Bool = false
+    @State private var isScreenActive: Bool = false
+    @State private var microphoneToken = UUID()
+    @State private var speechRecoveryIssue: SpeechRecognitionIssue? = nil
+    @State private var hasSpokenInAttempt: Bool = false
     @State private var justSucceeded: Bool = false
 
     @State private var guidanceStartToken: UUID = UUID()
@@ -60,17 +65,19 @@ struct EasyOnsetView: View {
     @StateObject private var transcriber = SpeechTranscriber(locale: Locale(identifier: "en_US"))
 
     // MARK: - Scoring capture (V1)
+    // Only accepted steps contribute to the session summary.
+    // Keep a separate buffer for the active attempt so an uncertain microphone
+    // reading or an unrecognized phrase cannot lower the user's scores.
     @State private var rmsSamples: [Float] = []
     @State private var onsetScores: [Int] = []
+    @State private var attemptRMSSamples: [Float] = []
 
     private let sampleTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
     private let tutorialTicker = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
 
-    /// Honest gate: only block if system is VERY confident it was not a soft start.
-    private let honestGateConfidence: Float = 0.80
-
-    /// Transcript acceptance ratio (IDEA 3): subsequence LCS ratio.
-    private let transcriptLCSRatio: Float = 0.70
+    /// Keep word recognition flexible: Apple Speech may omit or revise a
+    /// token. Word matching and gentle-onset quality are separate checks.
+    private let transcriptLCSRatio: Float = 0.80
 
     @State private var isFrozen: Bool = false
 
@@ -93,9 +100,13 @@ struct EasyOnsetView: View {
                     stepTextBlock
                     micButton
 
+                    // Readiness is explicit: preparing is NOT permission to speak.
+                    // Once AVAudioEngine has started, the invitation is immediate.
                     Text(statusLine)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(AppTheme.ink.opacity(0.55))
+                        .foregroundStyle(AppTheme.ink.opacity(isListening ? 0.78 : 0.55))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
                     if let feedback, isTutorialPlaying == false {
                         FeedbackToast(model: feedback)
@@ -112,15 +123,18 @@ struct EasyOnsetView: View {
             }
         }
         .task {
+            isScreenActive = true
             // ✅ Demo mode: skip permissions + SR config (still shows full UI)
             if mode.isDemo == false {
                 await transcriber.requestPermissions()
+                guard isScreenActive else { return }
                 transcriber.setExpectedPhrase(sanitizedStep)
                 transcriber.configureMatch(ratio: transcriptLCSRatio, minWords: 1)
             }
 
             rmsSamples = []
             onsetScores = []
+            attemptRMSSamples = []
 
             if !TechniqueIntroStore.hasSeen(.easyOnset) {
                 requestTechniqueIntro(true)
@@ -150,31 +164,25 @@ struct EasyOnsetView: View {
             if tutorialRemaining <= 0 { finishTutorial() }
         }
         .onChange(of: transcriber.isSpeaking) { speaking in
-            // ✅ Demo mode: do not evaluate via SR speaking edges
-            guard mode.isDemo == false else { return }
+            guard !mode.isDemo, isListening, !isFrozen, !isTutorialPlaying else {
+                wasSpeaking = speaking
+                return
+            }
 
-            guard isFrozen == false else { return }
-            guard isTutorialPlaying == false else { wasSpeaking = speaking; return }
-            guard isListening else { wasSpeaking = speaking; return }
-
-            if wasSpeaking == false && speaking == true {
+            if speaking && !hasSpokenInAttempt {
+                // Start the guided karaoke once, not again after every pause.
+                hasSpokenInAttempt = true
                 guidanceStartToken = UUID()
             }
-
-            if wasSpeaking == true && speaking == false {
-                evaluateAtEndOfSpeech()
-            }
-
             wasSpeaking = speaking
         }
         .onChange(of: transcriber.didMatchExpectedPhrase) { matched in
-            // ✅ Demo mode: no SR auto-match
-            guard mode.isDemo == false else { return }
+            guard matched, !mode.isDemo, isScreenActive, isListening,
+                  !isFrozen, !isTutorialPlaying else { return }
 
-            guard isFrozen == false else { return }
-            guard isListening else { return }
-            guard isTutorialPlaying == false else { return }
-            guard matched else { return }
+            // Auto-complete exactly as Velora originally did: the recognized
+            // phrase stops the mic and immediately triggers technique feedback.
+            // The match is NOT itself a success: evaluate() still checks onset.
             stopListening(userInitiated: false)
             evaluate()
         }
@@ -184,9 +192,30 @@ struct EasyOnsetView: View {
 
             guard isFrozen == false else { return }
             guard isListening else { return }
-            rmsSamples.append(transcriber.rawRMS)
+            attemptRMSSamples.append(transcriber.rawRMS)
+        }
+        .onChange(of: transcriber.recoveryIssue) { _, issue in
+            guard isScreenActive, !mode.isDemo else { return }
+            if let issue { speechRecoveryIssue = issue }
+        }
+        .onChange(of: transcriber.isRecording) { _, recording in
+            // Handle failures reported asynchronously by Apple's Speech service.
+            if !recording && isListening {
+                isListening = false
+                hasSpokenInAttempt = false
+            }
+        }
+        .speechRecoveryAlert(issue: $speechRecoveryIssue) {
+            guard isScreenActive, !mode.isDemo else { return }
+            transcriber.clearRecoveryIssue()
+            startListening()
         }
         .onDisappear {
+            isScreenActive = false
+            speechRecoveryIssue = nil
+            microphoneToken = UUID()
+            isStartingMicrophone = false
+            isListening = false
             transcriber.stop()
         }
     }
@@ -223,6 +252,8 @@ struct EasyOnsetView: View {
     private func handleFreezeChange(_ shouldFreeze: Bool) {
         if shouldFreeze {
             isFrozen = true
+            microphoneToken = UUID()
+            isStartingMicrophone = false
             if isListening { stopListening(userInitiated: false) }
             demoInFlight = false
         } else {
@@ -240,7 +271,7 @@ struct EasyOnsetView: View {
             } else {
                 return .guidedPractice(
                     phrase: text,
-                    isActive: (isListening && (mode.isDemo ? false : transcriber.isSpeaking) && isFrozen == false),
+                    isActive: (isListening && !mode.isDemo && hasSpokenInAttempt && !isFrozen),
                     startToken: guidanceStartToken,
                     mismatch: false,
                     totalDuration: tutorialDuration(for: text)
@@ -346,9 +377,17 @@ struct EasyOnsetView: View {
             return "Tap the mic to preview."
         }
 
-        if transcriber.isAuthorized == false { return "Permissions not granted." }
-        if transcriber.supportsOnDevice == false { return "On-device speech isn’t available." }
-        if isListening { return "Listening…" }
+        if isStartingMicrophone { return "Just a moment… preparing the mic." }
+        if let message = transcriber.statusMessage { return message }
+        if transcriber.isAuthorized == false { return "Microphone and speech access needed." }
+        if transcriber.supportsOnDevice == false {
+            return "English speech recognition isn't available offline on this device."
+        }
+        if isListening {
+            if transcriber.isSpeaking { return "I hear you. Keep going!" }
+            if hasSpokenInAttempt { return "Take your time. I'm still listening." }
+            return "Ready! You can speak now."
+        }
         return "Tap the mic to speak."
     }
 
@@ -359,6 +398,7 @@ struct EasyOnsetView: View {
             guard isFrozen == false else { return }
             guard isTutorialPlaying == false else { return }
             guard demoInFlight == false else { return }
+            guard !isStartingMicrophone, !justSucceeded else { return }
 
             if mode.isDemo {
                 // ✅ Demo: tap -> brief wait -> auto success
@@ -374,7 +414,9 @@ struct EasyOnsetView: View {
         } label: {
             ZStack {
                 Circle()
-                    .fill(AppTheme.paper.opacity(0.88))
+                    // Mint is a clear ready-to-speak signal, not an onset score.
+                    // Keep setup pale and visibly different from active listening.
+                    .fill(isListening ? AppTheme.mint.opacity(0.48) : AppTheme.paper.opacity(0.88))
                     .overlay(
                         Circle().stroke(
                             LinearGradient(
@@ -382,45 +424,89 @@ struct EasyOnsetView: View {
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ),
-                            lineWidth: 3
+                            lineWidth: isListening ? 3.5 : 3
                         )
                     )
                     .frame(width: 66, height: 66)
                     .shadow(color: AppTheme.shadow, radius: 10, x: 0, y: 6)
 
-                Image(systemName: isListening ? "waveform" : "mic.fill")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(AppTheme.ink.opacity(0.72))
+                if isStartingMicrophone {
+                    // Clearly not listening yet: never show a live waveform
+                    // until the audio engine has successfully started.
+                    ProgressView()
+                        .tint(AppTheme.ink.opacity(0.65))
+                        .accessibilityHidden(true)
+                } else {
+                    Image(systemName: isListening ? "waveform" : "mic.fill")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(AppTheme.ink.opacity(0.72))
+                }
             }
             .opacity((isTutorialPlaying || isFrozen) ? 0.40 : 1.0)
-            .scaleEffect(isListening ? 1.05 : 1.0)
+            .scaleEffect(isListening && transcriber.isSpeaking ? 1.09 : (isListening ? 1.05 : 1.0))
             .animation(.spring(response: 0.28, dampingFraction: 0.80), value: isListening)
+            .animation(.easeInOut(duration: 0.16), value: transcriber.isSpeaking)
         }
         .buttonStyle(.plain)
-        .disabled(isTutorialPlaying || isFrozen || demoInFlight)
+        .accessibilityLabel(
+            isStartingMicrophone ? "Preparing microphone, please wait" :
+                (isListening ? "Microphone active, speak now" : "Start microphone")
+        )
+        .accessibilityHint("The microphone stops automatically when Velora recognizes the phrase.")
+        .disabled(isTutorialPlaying || isFrozen || demoInFlight || isStartingMicrophone || justSucceeded)
     }
 
     private func startListening() {
-        justSucceeded = false
-        isListening = true
-        wasSpeaking = false
+        guard isScreenActive, !isStartingMicrophone, !isFrozen, !isTutorialPlaying else { return }
+        isStartingMicrophone = true
+        let token = UUID()
+        microphoneToken = token
 
-        withAnimation(.easeInOut(duration: 0.12)) { feedback = nil }
-        guidanceStartToken = UUID()
+        Task { @MainActor in
+            // A first tap must work even if the permission sheet was delayed.
+            // No overlapping microphone starts while permission is being shown.
+            if !transcriber.isAuthorized { await transcriber.requestPermissions() }
 
-        transcriber.setExpectedPhrase(sanitizedStep)
-        transcriber.configureMatch(ratio: transcriptLCSRatio, minWords: 1)
+            guard microphoneToken == token else { return }
+            defer { isStartingMicrophone = false }
+            guard isScreenActive, !isFrozen, !isTutorialPlaying, !isListening else { return }
+            guard transcriber.isAuthorized else {
+                speechRecoveryIssue = .permissionRequired
+                return
+            }
 
-        transcriber.resetExpectedMatch()
-        transcriber.resetOnset()
-        transcriber.resetTranscript()
-        transcriber.start()
+            justSucceeded = false
+            wasSpeaking = false
+            hasSpokenInAttempt = false
+            attemptRMSSamples.removeAll(keepingCapacity: true)
+            withAnimation(.easeInOut(duration: 0.12)) { feedback = nil }
+            guidanceStartToken = UUID()
+
+            transcriber.setExpectedPhrase(sanitizedStep)
+            transcriber.configureMatch(ratio: transcriptLCSRatio, minWords: 1)
+            transcriber.resetExpectedMatch()
+            transcriber.resetOnset()
+            transcriber.resetTranscript()
+
+            // No green/waveform UI unless the underlying audio engine started.
+            isListening = transcriber.start()
+        }
     }
 
     private func stopListening(userInitiated: Bool) {
+        let hadAttempt = isListening
+        // The recognizer can finish its phrase before the audio tap's completed
+        // onset result has reached @Published state. Commit only real completed
+        // evidence before stop invalidates callbacks and releases the mic.
+        if hadAttempt && !mode.isDemo {
+            transcriber.commitCompletedOnsetForEvaluation()
+        }
         isListening = false
         transcriber.stop()
-        if userInitiated { evaluateAtEndOfSpeech() }
+        // Manual stop remains a fallback when Apple's recognizer cannot
+        // match the phrase. It is NOT required for ordinary completion.
+        if userInitiated && hadAttempt { evaluateAtEndOfSpeech() }
+        hasSpokenInAttempt = false
     }
 
     // MARK: - Demo attempt
@@ -435,6 +521,7 @@ struct EasyOnsetView: View {
 
         // Give judges immediate “success feedback” vibe
         DispatchQueue.main.asyncAfter(deadline: .now() + demoSuccessDelay) {
+            guard self.isScreenActive else { return }
             guard self.isFrozen == false else { return }
             guard self.isTutorialPlaying == false else { return }
 
@@ -442,7 +529,7 @@ struct EasyOnsetView: View {
             self.rmsSamples.append(0.02)
             self.onsetScores.append(88)
 
-            self.setFeedback(.success, "Nice. Smooth start ✅")
+            self.setFeedback(.success, "Lovely! Gentle start.")
             self.demoInFlight = false
             self.triggerSuccess()
         }
@@ -450,6 +537,8 @@ struct EasyOnsetView: View {
 
     // MARK: - Tutorial
     private func playTutorial() {
+        microphoneToken = UUID()
+        isStartingMicrophone = false
         stopListening(userInitiated: false)
         wasSpeaking = false
         guidanceStartToken = UUID()
@@ -493,54 +582,69 @@ struct EasyOnsetView: View {
         guard mode.isDemo == false else { return }
         guard isFrozen == false else { return }
 
-        onsetScores.append(Swift.max(0, Swift.min(100, transcriber.onsetScore)))
-
-        let expected = expectedWords(from: sanitizedStep)
-        let spoken = expectedWords(from: transcriber.transcript)
+        let expected = SpeechWordMatcher.words(from: sanitizedStep)
+        let spoken = SpeechWordMatcher.words(from: transcriber.transcript, expected: expected)
 
         guard !expected.isEmpty else { return }
 
+        // First decide whether Apple recognized the target phrase. This must
+        // come before the onset check: unclear audio should never be described
+        // as a correct phrase (or a failed technique) without evidence.
         guard !spoken.isEmpty else {
-            setFeedback(.neutral, "I couldn’t catch that.\nTry again, a bit closer to the mic.")
+            setFeedback(.neutral, "I missed that. Try again?")
             return
         }
 
         let transcriptOK = transcriber.didMatchExpectedPhrase || relaxedTranscriptCheck(expected: expected, spoken: spoken)
 
-        let threshold = adaptiveOnsetThreshold(for: expected)
-        let verdict = transcriber.onsetVerdict
-        let conf = transcriber.onsetConfidence
+        // If the words do not match, show what speech recognition actually
+        // returned. Do not make a claim about onset quality in this branch.
+        if !transcriptOK {
+            setFeedback(.neutral, "I heard “\(previewHeard(spoken))”.\nTry again.")
+            return
+        }
+
+        // When a short or fast phrase produces no complete onset sample,
+        // avoid blaming the microphone OR claiming the user made a mistake.
+        // Give a gentle, actionable prompt without changing the pass criteria.
+        guard transcriber.onsetVerdict != .notDetected else {
+            setFeedback(.neutral, "I heard your words.\nLet's try the start once more.")
+            return
+        }
+
+        // Only real acoustic evidence can establish a gentle start. The prior
+        // score-only fallback could accept .tryAgain, particularly on long
+        // sentences. Sentence length must never lower the onset bar.
+        let onsetDecision = EasyOnsetAcceptance.classify(
+            verdict: transcriber.onsetVerdict,
+            kind: transcriber.onsetKind,
+            confidence: transcriber.onsetConfidence,
+            score: transcriber.onsetScore,
+            expectedWords: expected
+        )
+        let onsetOK = onsetDecision == .accepted
         let score = transcriber.onsetScore
-        let kind = transcriber.onsetKind
-        let nonExplosiveAttempt = (kind != .hard)
 
-        let onsetOK: Bool = {
-            if verdict == .great || verdict == .good { return true }
-            if verdict == .tryAgain && conf >= honestGateConfidence { return false }
-            if nonExplosiveAttempt && score >= (threshold - 6) { return true }
-            return false
-        }()
-
-        if transcriptOK && onsetOK {
-            setFeedback(.success, "Nice. Smooth start ✅")
+        if onsetOK {
+            // A step is scored only after BOTH gates pass: recognized phrase
+            // and valid gentle-onset evidence. Retries and missing measurements
+            // never leak into Smoothness or Confidence.
+            rmsSamples.append(contentsOf: attemptRMSSamples)
+            onsetScores.append(Swift.max(0, Swift.min(100, score)))
+            attemptRMSSamples.removeAll(keepingCapacity: true)
+            setFeedback(.success, "Lovely! Gentle start.")
             triggerSuccess()
-            return
-        }
-
-        if onsetOK && !transcriptOK {
-            let heard = previewHeard(spoken)
-            setFeedback(.neutral, "Good start.\nI heard “\(heard)”. Try the phrase again.")
-            return
-        }
-
-        if transcriptOK && !onsetOK {
-            setFeedback(.neutral, "Close ✅\nTry a softer start—air first, then voice.")
+        } else {
+            switch onsetDecision {
+            case .accepted:
+                break // handled above
+            case .retryGentler:
+                setFeedback(.neutral, "Words right! Try a softer start.")
+            case .uncertain:
+                setFeedback(.neutral, "I heard your words.\nLet's try the start once more.")
+            }
             triggerOnsetRetry()
-            return
         }
-
-        let heard = previewHeard(spoken)
-        setFeedback(.neutral, "Try again.\nI heard “\(heard)”.")
     }
 
     private func relaxedTranscriptCheck(expected: [String], spoken: [String]) -> Bool {
@@ -557,37 +661,7 @@ struct EasyOnsetView: View {
                 j += 1
             }
         }
-        let required = max(1, Int(ceil(Float(expected.count) * transcriptLCSRatio)))
-        return matched >= required
-    }
-
-    // MARK: - Less strict threshold
-    private func adaptiveOnsetThreshold(for expectedWords: [String]) -> Int {
-        var t = 50
-
-        let phrase = expectedWords.joined(separator: " ")
-        let totalChars = phrase.count
-        let wordCount = expectedWords.count
-        let first = expectedWords.first ?? ""
-
-        if wordCount <= 1 && totalChars <= 4 { t -= 12 }
-        else if wordCount <= 2 && totalChars <= 10 { t -= 9 }
-
-        if wordCount >= 4 || totalChars >= 18 { t -= 5 }
-        if startsWithPlosive(first) { t -= 10 }
-        if startsWithVowel(first) { t += 2 }
-
-        return Swift.max(36, Swift.min(66, t))
-    }
-
-    private func startsWithPlosive(_ word: String) -> Bool {
-        guard let c = word.lowercased().first else { return false }
-        return ["p","t","k","b","d","g"].contains(c)
-    }
-
-    private func startsWithVowel(_ word: String) -> Bool {
-        guard let c = word.lowercased().first else { return false }
-        return ["a","e","i","o","u"].contains(c)
+        return matched >= expected.count
     }
 
     // MARK: - Feedback helpers
@@ -599,7 +673,8 @@ struct EasyOnsetView: View {
 
     private func previewHeard(_ spoken: [String]) -> String {
         let firstFew = spoken.prefix(4).joined(separator: " ")
-        return firstFew.isEmpty ? "…" : firstFew
+        guard !firstFew.isEmpty else { return "…" }
+        return spoken.count > 4 ? firstFew + "…" : firstFew
     }
 
     // MARK: - Retry / success
@@ -609,7 +684,7 @@ struct EasyOnsetView: View {
         Haptics.tap()
         stopListening(userInitiated: false)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            guard self.isFrozen == false else { return }
+            guard self.isScreenActive, self.isFrozen == false else { return }
             self.transcriber.resetTranscript()
             self.transcriber.resetOnset()
             self.transcriber.resetExpectedMatch()
@@ -626,7 +701,7 @@ struct EasyOnsetView: View {
         withAnimation(.easeInOut(duration: 0.18)) { justSucceeded = true }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) {
-            guard self.isFrozen == false else { return }
+            guard self.isScreenActive, self.isFrozen == false else { return }
             withAnimation(.easeInOut(duration: 0.18)) { self.justSucceeded = false }
 
             if self.isLast {
@@ -638,16 +713,7 @@ struct EasyOnsetView: View {
         }
     }
 
-    // MARK: - Word normalization
-    private func expectedWords(from input: String) -> [String] {
-        let lower = input.lowercased()
-        let cleaned = lower
-            .replacingOccurrences(of: "[^a-z\\s']", with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if cleaned.isEmpty { return [] }
-        return cleaned.split(separator: " ").map { String($0) }
-    }
 }
 
 // MARK: - Feedback Toast (ONE message)
@@ -665,6 +731,12 @@ private struct FeedbackToast: View {
         Text(model.text)
             .font(.system(size: 12.5, weight: .bold, design: .rounded))
             .foregroundStyle(AppTheme.ink.opacity(model.style == .success ? 0.90 : 0.70))
+            // Feedback may wrap to two lines; both lines stay centered under
+            // the microphone rather than inheriting Text's leading alignment.
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            // Let the text determine the toast width. The surrounding VStack
+            // constrains long recognized phrases to the available screen width.
             .padding(.vertical, 8)
             .padding(.horizontal, 12)
             .background(
