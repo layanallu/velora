@@ -17,7 +17,7 @@ struct AudioSampleButton: View {
     /// Bundled file name without extension (e.g. "My Name Is")
     var sampleFileName: String = "My Name Is"
     /// File extension (e.g. "m4a")
-    var sampleFileExtension: String = "m4a"
+    var sampleFileExtension: String = "mp3"
 
     @StateObject private var playback = AudioPlayback()
 
