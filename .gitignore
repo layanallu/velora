@@ -1,0 +1,29 @@
+# Xcode personal and generated data
+.DS_Store
+**/.DS_Store
+**/xcuserdata/
+*.xcuserstate
+DerivedData/
+**/DerivedData/
+*.xcarchive
+*.ipa
+*.app
+*.dSYM/
+*.dSYM.zip
+
+# Swift build and package caches
+.build/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+Package.resolved.bak
+
+# Local environment files
+.env
+.env.*
+!.env.example
+*.swp
+*.swo
+*~
+
+# Temporary recordings / local test captures (if written near repo)
+VeloraRecordings/
+local-recordings/

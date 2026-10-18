@@ -24,7 +24,7 @@ struct EasyOnsetExampleView: View {
 
     // MARK: - Audio sample (bundle)
     var sampleFileName: String = "My Name Is"
-    var sampleFileExtension: String = "m4a"
+    var sampleFileExtension: String = "mp3"
 
     // MARK: - Karaoke timing control
     /// Total duration for ONE full karaoke loop (start → end + holds). 

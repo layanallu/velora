@@ -1,228 +1,71 @@
-# Velora 🌿
+# Velora 🫧
 
-**Velora** is an emotionally intelligent speech practice experience designed for people who stutter.
+**An emotionally supportive, offline speech-practice experience for people who stutter.**
 
-Instead of repeating random words or isolated sentences, Velora allows users to **rehearse real speaking moments** in a calm and supportive environment.
+Velora was developed for the **Swift Student Challenge 2026**. Instead of offering disconnected drills, it lets people rehearse real speaking situations with a gentle, expressive SwiftUI companion.
 
-The project was created as a submission for the **Apple Swift Student Challenge 2026**.
+## Experience
 
----
+1. **Onboarding and Home** — a calm introduction and one clear way to begin.
+2. **Choose a topic** — 10 reading passages and 12 real-life scenarios, plus a custom-topic flow.
+3. **Breathing** — a guided 60-second ritual (normal mode). The timer pauses if the app is inactive or backgrounded.
+4. **Ready to Start** — a quiet transition before speaking.
+5. **Easy Onset** — cumulative phrases build toward each complete sentence, with on-device speech recognition and a heuristic acoustic-onset check.
+6. **Rhythm Pacing** — the same topic text, with subtle visual rhythm and word-by-word progress.
+7. **Feedback** — supportive scores and optional playback of the Rhythm recording.
 
-# ✨ The Idea
+The exit confirmation is available during Breathing, Ready, Easy Onset and Rhythm, but not on the Feedback screen. Swiping down or choosing **Keep Practicing** returns to the session; **Leave Session** is the explicit exit action.
 
-Imagine wanting to speak — but wishing you could rehearse the moment first.
+## Screenshots
 
-Not random sentences.  
-Not mechanical speech drills.
+| Breathing | Easy Onset | Rhythm |
+|:--:|:--:|:--:|
+| ![Breathing](docs/images/01_Breathing_Alive.png) | ![Easy Onset](docs/images/02_EasyOnset_GuidedStart.png) | ![Rhythm](docs/images/03_Rhythm_Confidence.png) |
 
-But real situations:
-- introducing yourself
-- answering a question
-- responding when someone is waiting
+## Built with
 
-Velora was designed around a simple insight:
+- Swift and SwiftUI, including the animated Velora character, gradients and visual feedback.
+- Apple Speech (English US, on-device recognition required) and AVFoundation.
+- Offline text normalization to tolerate common Apple Speech formatting variants such as contractions and digits.
+- Temporary local Rhythm audio recording for feedback playback.
+- UserDefaults for lightweight onboarding/technique-introduction preferences.
 
-> People don't just want to practice speech.  
-> They want to practice **moments that matter**.
+No sign-in, third-party SDKs, analytics service or network API is used by the app in this source tree. On-device speech-recognition availability and microphone permissions must be tested on supported hardware.
 
-Velora provides guided scenarios where users can regulate their breathing, begin speaking gently, find rhythm, and try again — all inside a space that feels calm, alive, and supportive.
+## Getting started
 
----
+1. On a Mac with a compatible version of **Xcode**, open **`Velora.xcodeproj`**.
+2. Select the **Velora** scheme and your iPhone/iPad as the destination.
+3. Set your own Apple development team in **Signing & Capabilities** if required.
+4. Run on a **physical device** for microphone and offline speech-recognition tests.
 
-# 🌱 What Makes Velora Different
+> **Release note:** Xcode currently contains `MARKETING_VERSION = 1.0`, `CURRENT_PROJECT_VERSION = 1` and an iOS deployment target of 26.1 at the app target level. Check your existing App Store Connect version/build before uploading an update; do not overwrite these values blindly.
 
-Most speech training tools feel clinical or repetitive.
+## Verification
 
-Velora focuses on **experience design**.
+On a Mac with Swift installed, the existing offline checks can be run from the project root:
 
-Users do not speak into silence.  
-They interact with **Velora**, a responsive character that:
+```bash
+bash QualityChecks/RUN_CONTENT_AND_SPEECH_TESTS.command
+bash QualityChecks/RUN_EASY_ONSET_DECISION_TESTS.command
+bash QualityChecks/RUN_ONSET_EVIDENCE_TESTS.command
+bash QualityChecks/RUN_ONSET_SMOKE_TESTS.command
+```
 
-• breathes with the user  
-• reacts to progress  
-• follows words during speech  
-• provides gentle emotional feedback  
+These tests check deterministic logic, **not** end-to-end speech accuracy or animation quality on iPhone. A full Xcode Release build and physical-device regression test are still required.
 
-This creates a practice environment that feels **alive rather than mechanical**.
+## Project documentation
 
----
+- [Architecture and file structure](docs/ARCHITECTURE.md)
+- [Change history](CHANGELOG.md)
+- [App Store release checklist](docs/APP_STORE_RELEASE_CHECKLIST.md)
+- [GitHub publishing guide](docs/GITHUB_PUBLISHING.md)
+- [Cleanup and verification record](docs/CLEANUP_REPORT.md)
 
-# 🧭 Experience Flow
+## Important note
 
-Velora follows a structured experience designed to gradually support fluency.
+Velora is a supportive practice tool, **not a diagnostic device or a substitute for individualized speech-language therapy**. Its onset and session scores use app-specific heuristics and have not been clinically validated. Difficult speech should never be interpreted as personal failure.
 
-### 1️⃣ Onboarding
-A calm introduction that establishes psychological safety.
+## Creator
 
-### 2️⃣ Home Screen
-A minimal interface with Velora present and a single primary action.
-
-### 3️⃣ Topic Selection
-Users choose between:
-
-**Reading Passages**
-Structured reading practice.
-
-**Real-Life Scenarios**
-Context-based speaking simulations.
-
-### 4️⃣ Live Speech Session
-
-The speaking experience unfolds across three phases:
-
-**Breathing Ritual**
-
-A short guided breathing experience that helps users regulate before speaking.
-Velora visually expands and contracts with each breath.
-
-**Easy Onset**
-
-Users practice beginning speech gently to reduce tension.
-
-**Rhythm Pacing**
-
-Speech is paced through subtle visual rhythm cues.
-
-### 5️⃣ Feedback Screen
-
-Users receive gentle feedback including:
-
-• Smoothness score  
-• Rhythm score  
-• Confidence indicator  
-• One supportive suggestion  
-
----
-
-# 🫧 Velora Character
-
-Velora is the emotional center of the experience.
-
-The character is built entirely with **SwiftUI** using gradients and animations.
-
-Velora:
-
-🌬 breathes with the user  
-👀 follows spoken words  
-😊 reacts with encouraging expressions  
-✨ subtly changes behavior across phases
-
-The goal is to make speech practice feel **supportive rather than stressful**.
-
----
-
-# 🎤 Techniques Used
-
-Velora integrates techniques commonly used in speech therapy.
-
-### Breathing Regulation
-A short breathing ritual helps reduce speaking tension.
-
-### Easy Onset
-Users practice starting speech with a softer onset.
-
-### Rhythm Pacing
-Speech pacing is supported by gentle visual rhythm.
-
-These techniques are woven into the experience rather than presented as exercises.
-
----
-
-# 🧠 Technology
-
-Velora was built using modern Apple technologies.
-
-**Frameworks**
-
-• Swift  
-• SwiftUI  
-• Speech Framework  
-• AVFoundation  
-
-**Core Systems**
-
-• on-device speech recognition  
-• speech onset detection  
-• rhythm pacing engine  
-• guided karaoke-style highlighting  
-• audio recording and playback  
-
-All speech processing runs **fully offline**.
-
----
-
-# ♿ Accessibility Considerations
-
-Velora was designed to reduce pressure during speech practice.
-
-Design choices include:
-
-• minimal cognitive load  
-• supportive feedback language  
-• calm visual pacing  
-• clear interaction flow  
-
-The experience aims to create a **safe environment for speaking**.
-
----
-
-# 🎨 Design System
-
-Velora uses a soft visual language built around calm colors.
-
-Palette:
-
-Mint  
-Aqua  
-Ink  
-Paper
-
-The design avoids harsh contrast and focuses on clarity and emotional comfort.
-
----
-
-# 📸 Screenshots
-
-### 🌬 Breathing Ritual
-
-![Breathing Ritual](ui/01_Breathing_Alive.png)
-
-A calm breathing entry ritual that helps the user regulate before speaking.  
-Velora expands and contracts visually to guide each breath.
-
----
-
-### 🎤 Easy Onset
-
-![Easy Onset](ui/02_EasyOnset_GuidedStart.png)
-
-Users practice starting speech gently.  
-The current word highlights as the user speaks, encouraging a softer and more controlled onset.
-
----
-
-### 🎵 Rhythm Pacing
-
-![Rhythm Pacing](ui/03_Rhythm_Confidence.png)
-
-Speech is paced using a subtle visual rhythm.  
-This helps users maintain smoother timing and build speaking confidence.
-
----
-
-# 🚀 Future Improvements
-
-Possible future directions include:
-
-• expanded speaking scenarios  
-• adaptive difficulty levels  
-• deeper speech analysis  
-• long-term progress tracking  
-
----
-
-# 👩‍💻 Author
-
-**Layan Allhidaan**
-
-Swift Student Challenge 2026 Submission
+**Layan Allhidaan** — Swift Student Challenge 2026 project.

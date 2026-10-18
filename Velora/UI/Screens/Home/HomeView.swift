@@ -2,17 +2,11 @@
 //  HomeView.swift
 //  Velora
 //
-//  Step 2: Home Page (Minimal & Clean)
-//  - Primary action: Start Session
-//  - Velora present
+//  Home is intentionally simple: a calm character, one primary action,
+//  and a discreet but accessible link to the published Privacy Policy.
 //
-//  Fixes:
-//  ✅ Velora is now stable (no floating) on Home.
-//  ✅ Start Session navigation works (no nested Button inside NavigationLink).
-//
-//  Created by LAYAN on 03/09/1447 AH.
-//  Updated by Velora on 28/02/2026:
-//  ✅ Preview no longer wraps its own NavigationStack to avoid confusion with the app-level stack.
+//  The privacy link is kept below Start Session, outside the primary action,
+//  so it never interferes with starting a speaking session.
 //
 
 import SwiftUI
@@ -25,7 +19,7 @@ struct HomeView: View {
             VStack(spacing: 18) {
                 Spacer(minLength: 28)
 
-                // ✅ Stable on Home: glow + breathe only (no "flying up/down")
+                // Stable character: soft glow and breathing, no floating on Home.
                 VeloraCharacterView(
                     expression: .smile,
                     size: 170,
@@ -48,18 +42,36 @@ struct HomeView: View {
 
                 Spacer()
 
-                // ✅ Proper navigation (no nested Button)
-                NavigationLink {
-                    TopicCategoryView()
-                } label: {
-                    PrimaryButtonLabel(title: "Start Session", systemImage: "sparkles")
+                VStack(spacing: 4) {
+                    // Primary action remains unchanged, including haptic feedback.
+                    NavigationLink {
+                        TopicCategoryView()
+                    } label: {
+                        PrimaryButtonLabel(title: "Start Session", systemImage: "sparkles")
+                    }
+                    .simultaneousGesture(TapGesture().onEnded {
+                        Haptics.tap()
+                    })
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 18)
+
+                    // Required in-app privacy access (App Review Guideline 5.1.1).
+                    // The label is visually understated while the touch area is 44pt.
+                    if let privacyPolicyURL = URL(string: "https://layanallu.github.io/velora/") {
+                        Link(destination: privacyPolicyURL) {
+                            Text("Privacy Policy")
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .underline()
+                                .foregroundStyle(AppTheme.ink.opacity(0.55))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens Velora's privacy policy in Safari")
+                    }
                 }
-                .simultaneousGesture(TapGesture().onEnded {
-                    Haptics.tap()
-                })
-                .buttonStyle(.plain)
-                .padding(.horizontal, 18)
-                .padding(.bottom, 50)
+                .padding(.bottom, 5)
             }
         }
         .navigationTitle(AppStrings.appName)
