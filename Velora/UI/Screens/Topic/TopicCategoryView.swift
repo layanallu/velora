@@ -4,15 +4,25 @@
 //
 //  Step 3: Topic Category Selection
 //
-//  ✅ Scroll works (removed drag gestures that block scrolling)
-//  ✅ Header scrolls away (heroHeader inside ScrollView)
-//  ✅ Shadowless cards (GlassCard without shadow)
-//  ✅ Stable navigation with NavigationLink
+//  Updated: Custom Topic + Demo hidden
+//  ✅ "Say It Your Way" added as last row in the list (same style as categories).
+//  ✅ Demo hidden behind TopicLibrary.isDemoEnabled flag (code fully preserved).
 //
-//  Updated by Velora on 28/02/2026:
-//  ✅ "Quick Preview" is now the LAST card (under the categories).
-//  ✅ All cards share the exact same visual style (same GlassCard layout).
-//  ✅ Added judges-only caption under Quick Preview to clarify (no mic required).
+
+//
+//  TopicCategoryView.swift
+//  Velora
+//
+//  Step 3: Topic Category Selection
+//
+//  Updated: Custom Topic + Demo hidden
+//  ✅ "Say It Your Way" added as last row in the list (same style as categories).
+//  ✅ Demo hidden behind TopicLibrary.isDemoEnabled flag (code fully preserved).
+//
+//  ─── PRESENTER ONLY ──────────────────────────────────────────────────────────
+//  Triple-tap on Velora character = hidden demo shortcut (presentations only).
+//  To remove: delete @State goDemoPreview + .onTapGesture(count:3) + .navigationDestination block.
+//  ─────────────────────────────────────────────────────────────────────────────
 //
 
 import SwiftUI
@@ -20,12 +30,13 @@ import SwiftUI
 struct TopicCategoryView: View {
     @State private var didAppear: Bool = false
 
-    // MARK: - Layout constants
+    // ─── PRESENTER ONLY ──────────────────────────────────────────────────────
+    @State private var goDemoPreview: Bool = false
+    // ─────────────────────────────────────────────────────────────────────────
+
     private let heroTopPadding: CGFloat = 26
     private let characterSize: CGFloat = 165
     private let heroSpacing: CGFloat = 10
-
-    // ✅ Unified card style (all rows identical)
     private let cardCornerRadius: CGFloat = 22
     private let cardContentPadding: CGFloat = 10
     private let rowInnerVerticalPadding: CGFloat = 1
@@ -46,8 +57,11 @@ struct TopicCategoryView: View {
 
                     VStack(spacing: 10) {
 
-                        // MARK: - Categories (first)
-                        ForEach(Array(TopicCategory.allCases.enumerated()), id: \.element) { index, category in
+                        // MARK: - Built-in categories
+                        ForEach(
+                            Array(TopicCategory.allCases.enumerated()),
+                            id: \.element
+                        ) { index, category in
                             NavigationLink {
                                 TopicSelectionView(category: category)
                             } label: {
@@ -56,7 +70,7 @@ struct TopicCategoryView: View {
                                     .offset(y: didAppear ? 0 : 10)
                                     .scaleEffect(didAppear ? 1 : 0.99)
                                     .animation(
-                                        .spring(response: 0.55, dampingFraction: 0.88, blendDuration: 0)
+                                        .spring(response: 0.55, dampingFraction: 0.88)
                                             .delay(0.03 * Double(index + 1)),
                                         value: didAppear
                                     )
@@ -64,60 +78,109 @@ struct TopicCategoryView: View {
                             .buttonStyle(PressScaleButtonStyle())
                         }
 
-                        // MARK: - Quick Preview (Judges) — LAST (same card style)
-                        VStack(spacing: 8) {
-                            NavigationLink {
-                                // ✅ Full flow, but simulated speech:
-                                // Breathing > Ready > Easy Onset (tap mic) > Rhythm (double-tap) > Feedback
-                                BreathingGateView(topic: TopicLibrary.demoPreviewTopic, mode: .demoPreview)
-                            } label: {
-                                quickPreviewRow()
-                                    .opacity(didAppear ? 1 : 0)
-                                    .offset(y: didAppear ? 0 : 10)
-                                    .scaleEffect(didAppear ? 1 : 0.99)
-                                    .animation(
-                                        .spring(response: 0.55, dampingFraction: 0.88, blendDuration: 0)
-                                            .delay(0.03 * Double(TopicCategory.allCases.count + 1)),
-                                        value: didAppear
-                                    )
-                            }
-                            .buttonStyle(PressScaleButtonStyle())
-
-                            // ✅ Judges-only caption (clear + honest)
-                            Text("Judges: this is a flow preview only. No microphone or speech recognition is required.")
-                                .font(.system(size: 12.5, weight: .semibold, design: .rounded))
-                                .foregroundStyle(AppTheme.ink.opacity(0.55))
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 6)
-                                .accessibilityLabel("Judges: this is a flow preview only. No microphone required.")
+                        // MARK: - Soft divider before custom option
+                        HStack {
+                            Rectangle()
+                                .fill(AppTheme.ink.opacity(0.08))
+                                .frame(height: 1)
                         }
-                        .padding(.top, 6)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 4)
+                        .opacity(didAppear ? 1 : 0)
+                        .animation(
+                            .easeInOut(duration: 0.35)
+                                .delay(0.03 * Double(TopicCategory.allCases.count + 1)),
+                            value: didAppear
+                        )
+
+                        // MARK: - Say It Your Way (same row style, last in list)
+                        NavigationLink {
+                            CustomTopicInputView()
+                        } label: {
+                            unifiedRow(
+                                iconSystemName: "pencil.and.outline",
+                                title: "Say It Your Way",
+                                subtitle: "Practice with your own words."
+                            )
+                            .opacity(didAppear ? 1 : 0)
+                            .offset(y: didAppear ? 0 : 10)
+                            .scaleEffect(didAppear ? 1 : 0.99)
+                            .animation(
+                                .spring(response: 0.55, dampingFraction: 0.88)
+                                    .delay(0.03 * Double(TopicCategory.allCases.count + 2)),
+                                value: didAppear
+                            )
+                        }
+                        .buttonStyle(PressScaleButtonStyle())
+
+                        // MARK: - Demo (hidden — set isDemoEnabled = true to restore)
+                        if TopicLibrary.isDemoEnabled {
+                            VStack(spacing: 8) {
+                                NavigationLink {
+                                    BreathingGateView(
+                                        topic: TopicLibrary.demoPreviewTopic,
+                                        mode: .demoPreview
+                                    )
+                                } label: {
+                                    unifiedRow(
+                                        iconSystemName: "sparkles",
+                                        title: "Quick Preview",
+                                        subtitle: "See the full flow without using the mic."
+                                    )
+                                }
+                                .buttonStyle(PressScaleButtonStyle())
+
+                                Text("Judges: flow preview only. No microphone required.")
+                                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(AppTheme.ink.opacity(0.55))
+                                    .multilineTextAlignment(.leading)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 6)
+                            }
+                            .padding(.top, 6)
+                        }
                     }
                     .padding(.horizontal, 18)
                     .padding(.top, 10)
-                    .padding(.bottom, 18)
+                    .padding(.bottom, 32)
                 }
             }
         }
         .navigationTitle(AppStrings.topics)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { didAppear = true }
+        // ─── PRESENTER ONLY ──────────────────────────────────────────────────
+        .navigationDestination(isPresented: $goDemoPreview) {
+            BreathingGateView(
+                topic: TopicLibrary.demoPreviewTopic,
+                mode: .demoPreview
+            )
+        }
+        // ─────────────────────────────────────────────────────────────────────
     }
 
     // MARK: - Header
+    // ─── PRESENTER ONLY: triple-tap on Velora triggers demo ──────────────────
 
-    private func heroHeader(title: String, subtitle: String, expression: BubbleExpression, gaze: EyeGaze) -> some View {
+    private func heroHeader(
+        title: String,
+        subtitle: String,
+        expression: BubbleExpression,
+        gaze: EyeGaze
+    ) -> some View {
         VStack(spacing: heroSpacing) {
             Spacer(minLength: heroTopPadding)
 
             VeloraCharacterView(expression: expression, size: characterSize, gaze: gaze)
+                .onTapGesture(count: 3) {
+                    Haptics.tap()
+                    goDemoPreview = true
+                }
 
             VStack(spacing: 6) {
                 Text(title)
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(AppTheme.ink)
-
                 Text(subtitle)
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(AppTheme.ink.opacity(0.65))
@@ -127,19 +190,9 @@ struct TopicCategoryView: View {
         }
         .padding(.bottom, 8)
     }
+    // ─────────────────────────────────────────────────────────────────────────
 
-    // MARK: - Quick Preview Row (same shape as categories)
-
-    private func quickPreviewRow() -> some View {
-        unifiedRow(
-            iconSystemName: "sparkles",
-            title: "Quick Preview",
-            subtitle: "See the full flow without using the mic."
-        )
-        .accessibilityLabel("Quick Preview")
-    }
-
-    // MARK: - Category Row
+    // MARK: - Row Builders
 
     private func categoryRow(_ category: TopicCategory) -> some View {
         unifiedRow(
@@ -149,9 +202,11 @@ struct TopicCategoryView: View {
         )
     }
 
-    // MARK: - Unified Row Builder (ONE source of truth)
-
-    private func unifiedRow(iconSystemName: String, title: String, subtitle: String) -> some View {
+    private func unifiedRow(
+        iconSystemName: String,
+        title: String,
+        subtitle: String
+    ) -> some View {
         GlassCard(contentPadding: cardContentPadding, cornerRadius: cardCornerRadius) {
             HStack(spacing: 12) {
                 Image(systemName: iconSystemName)
@@ -162,11 +217,10 @@ struct TopicCategoryView: View {
                     Text(title)
                         .font(.system(size: 16, weight: .bold, design: .rounded))
                         .foregroundStyle(AppTheme.ink)
-
                     Text(subtitle)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(AppTheme.ink.opacity(0.6))
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
 
                 Spacer()
@@ -181,7 +235,7 @@ struct TopicCategoryView: View {
     }
 }
 
-// MARK: - Shared ButtonStyle (same as TopicSelectionView)
+// MARK: - Button Style
 
 private struct PressScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

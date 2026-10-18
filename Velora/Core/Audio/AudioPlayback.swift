@@ -90,6 +90,14 @@ final class AudioPlayback: NSObject, ObservableObject, AVAudioPlayerDelegate {
         deactivateAudioSessionIfNeeded()
     }
 
+    /// Release the file handle before session-only audio is deleted.
+    func unload() {
+        stop()
+        player?.delegate = nil
+        player = nil
+        didFinish = false
+    }
+
     func toggle() {
         isPlaying ? pause() : play()
     }

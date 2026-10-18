@@ -18,6 +18,8 @@
 //     (3) Subsequence matching (LCS) to tolerate repeats / skips.
 //
 //  ✅ Does NOT require first word exact match anymore.
+//  App Store readiness: fail closed when offline recognition cannot start;
+//  never report an active microphone for unsupported/failed recognition.
 //
 
 import Foundation
@@ -36,6 +38,8 @@ final class SpeechTranscriber: ObservableObject {
     @Published var voicing: Float = 0        // same scale as audioLevel
     @Published var rawRMS: Float = 0         // ✅ raw RMS (for scoring capture)
     @Published var statusMessage: String? = nil
+    // Non-nil only when speech access/service needs the user’s attention.
+    @Published private(set) var recoveryIssue: SpeechRecognitionIssue? = nil
     @Published var isAuthorized: Bool = false
     @Published var supportsOnDevice: Bool = false
 
@@ -54,11 +58,35 @@ final class SpeechTranscriber: ObservableObject {
     private let audioEngine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    // Ignore delayed callbacks from previously cancelled recognition requests.
+    private var recognitionGenerationID = UUID()
+    // A second generation rejects queued mic-level updates after stopping/restarting.
+    private var audioSessionGenerationID = UUID()
+
+    // Audio taps run off the main thread. Protect request replacement while
+    // appending audio, especially when on-device recognition ends in silence.
+    private let bufferRequestLock = NSLock()
+    private var bufferRequest: SFSpeechAudioBufferRecognitionRequest?
+
+    // Do not restart the Speech service forever on a no-speech error.
+    private var silenceRecoveryCount = 0
+    private let maximumSilenceRecoveries = 2
+
+    // Publish display levels at a readable pace, not once per 1024-frame buffer.
+    private var lastLevelPublishTime: TimeInterval = 0
+    private var lastActiveSpeechTime: TimeInterval = 0
+    private let levelPublishInterval: TimeInterval = 1.0 / 15.0
+    private let speechHangover: TimeInterval = 0.28
+
     private let recognizer: SFSpeechRecognizer?
 
     private let onsetAnalyzer = OnsetAnalyzer()
+    // Preserve completed analyzer evidence independently from queued UI updates.
+    // The speech recognizer may auto-stop while that main-thread update is pending.
+    private let onsetEvidence = OnsetEvidenceStore()
     private var currentSampleRate: Double = 44100
     private let tapBufferSize: AVAudioFrameCount = 1024
+    private var hasInstalledTap = false
 
     private let speakingThreshold: Float = 0.028
     private var expectedWords: [String] = []
@@ -82,7 +110,7 @@ final class SpeechTranscriber: ObservableObject {
     }
 
     // MARK: - Expected phrase API
-    func setExpectedPhrase(_ text: String) { expectedWords = Self.words(from: text) }
+    func setExpectedPhrase(_ text: String) { expectedWords = SpeechWordMatcher.words(from: text) }
     func resetExpectedMatch() { didMatchExpectedPhrase = false }
 
     /// Configure relaxed matching strictness (optional).
@@ -127,6 +155,17 @@ final class SpeechTranscriber: ObservableObject {
         }
     }
 
+    // MARK: - Recovery
+    func clearRecoveryIssue() {
+        recoveryIssue = nil
+        statusMessage = nil
+    }
+
+    private func report(_ issue: SpeechRecognitionIssue) {
+        recoveryIssue = issue
+        statusMessage = issue.title
+    }
+
     // MARK: - Control
     func resetTranscript() {
         transcript = ""
@@ -142,66 +181,122 @@ final class SpeechTranscriber: ObservableObject {
         onsetDebug = nil
     }
 
-    func start() {
-        guard isRecording == false else { return }
+    // MARK: - Offline-only activation
 
+    /// Returns true only when the microphone and the English on-device recognizer
+    /// have started successfully. Screens use this result for their mic state.
+    @discardableResult
+    func start() -> Bool {
+        guard !isRecording else { return true }
+        clearRecoveryIssue()
+
+        // Settings can change while Velora is in the background.
+        let microphoneAllowed = AVAudioSession.sharedInstance().recordPermission == .granted
+        let speechAllowed = SFSpeechRecognizer.authorizationStatus() == .authorized
+        isAuthorized = microphoneAllowed && speechAllowed
         guard isAuthorized else {
-            statusMessage = statusMessage ?? "Permissions are not granted yet."
-            return
+            report(.permissionRequired)
+            return false
         }
 
-        guard let recognizer, recognizer.isAvailable else {
-            statusMessage = "Speech recognition is not available right now."
-            return
+        guard let recognizer else {
+            supportsOnDevice = false
+            report(.onDeviceEnglishUnavailable)
+            return false
         }
 
         supportsOnDevice = recognizer.supportsOnDeviceRecognition
+        guard supportsOnDevice else {
+            report(.onDeviceEnglishUnavailable)
+            return false
+        }
+
+        guard recognizer.isAvailable else {
+            report(.serviceInterrupted)
+            return false
+        }
 
         do {
             try configureSessionSafely()
-        } catch {
-            statusMessage = "Audio setup failed: \(error.localizedDescription)"
-            stop()
-            return
-        }
+            transcript = ""
+            didMatchExpectedPhrase = false
+            resetOnset()
+            silenceRecoveryCount = 0
+            lastLevelPublishTime = 0
+            lastActiveSpeechTime = 0
+            rawRMS = 0
+            audioLevel = 0
+            voicing = 0
+            isSpeaking = false
 
-        transcript = ""
-        didMatchExpectedPhrase = false
-        resetOnset()
-
-        startEngineTapIfNeeded()
-
-        if supportsOnDevice {
+            // Set active before creating the asynchronous recognition task: its
+            // callback may arrive before AVAudioEngine.start() returns.
+            isRecording = true
             startRecognitionTask(recognizer: recognizer)
-        } else {
-            statusMessage = "On-device recognition isn't supported on this device."
-        }
+            try startEngineTapIfNeeded()
 
-        isRecording = true
-        statusMessage = nil
+            statusMessage = nil
+            return true
+        } catch {
+            stop()
+            report(.microphoneUnavailable)
+            return false
+        }
     }
 
     func stop() {
-        task?.cancel()
-        task = nil
-
-        request?.endAudio()
-        request = nil
-
-        if audioEngine.isRunning { audioEngine.stop() }
-        audioEngine.inputNode.removeTap(onBus: 0)
-
+        // Mark the session inactive before cancelling a recognition task, because
+        // cancellation can trigger delayed Speech framework callbacks.
         isRecording = false
         isSpeaking = false
 
-        // Keep file open only per segment (caller controls)
+        recognitionGenerationID = UUID()
+        audioSessionGenerationID = UUID()
+        onsetEvidence.invalidate()
+        closeRecognitionRequest()
+        task?.cancel()
+        task = nil
+        rawRMS = 0
+        audioLevel = 0
+        voicing = 0
+
+        // Stop the audio callback before closing its CAF writer.
+        if audioEngine.isRunning { audioEngine.stop() }
+        if hasInstalledTap {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            hasInstalledTap = false
+        }
+        shouldRecordToFile = false
         recordFile = nil
+        recordURL = nil
 
         do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            try AVAudioSession.sharedInstance().setActive(
+                false, options: .notifyOthersOnDeactivation
+            )
         } catch {
-            // harmless
+            // Deactivation is best-effort; all mic/recognition resources are closed.
         }
+    }
+
+    // MARK: - Easy Onset evidence handoff
+
+    /// Commit an ALREADY COMPLETED acoustic measurement before automatic or
+    /// manual stop. This does not manufacture a result if capture was short.
+    /// Rhythm never calls this method; its scoring and playback are unchanged.
+    func commitCompletedOnsetForEvaluation() {
+        guard isRecording else { return }
+        guard let metrics = onsetEvidence.snapshot(generation: audioSessionGenerationID) else { return }
+        applyOnsetMetrics(metrics)
+    }
+
+    private func applyOnsetMetrics(_ metrics: OnsetMetrics) {
+        onsetScore = metrics.score
+        onsetKind = metrics.kind
+        onsetVerdict = metrics.verdict
+        onsetHint = metrics.hint
+        onsetConfidence = metrics.confidence
+        onsetDebug = metrics.debug
     }
 
     // MARK: - Audio session
@@ -218,28 +313,31 @@ final class SpeechTranscriber: ObservableObject {
     }
 
     // MARK: - Engine Tap (mic level + onset + optional file recording)
-    private func startEngineTapIfNeeded() {
+    private func startEngineTapIfNeeded() throws {
         let input = audioEngine.inputNode
         let format = input.outputFormat(forBus: 0)
         currentSampleRate = format.sampleRate
 
         onsetAnalyzer.reset(sampleRate: currentSampleRate, framesPerBuffer: Double(tapBufferSize))
 
-        input.removeTap(onBus: 0)
+        if hasInstalledTap {
+            input.removeTap(onBus: 0)
+            hasInstalledTap = false
+        }
+        let audioGeneration = UUID()
+        audioSessionGenerationID = audioGeneration
+        onsetEvidence.begin(generation: audioGeneration)
         input.installTap(onBus: 0, bufferSize: tapBufferSize, format: format) { [weak self] buffer, _ in
             guard let self else { return }
 
-            self.request?.append(buffer)
-            self.updateLevelAndOnset(from: buffer)
+            self.appendAudioBuffer(buffer)
+            self.updateLevelAndOnset(from: buffer, generation: audioGeneration)
             self.writeBufferToFileIfNeeded(buffer)
         }
 
+        hasInstalledTap = true
         audioEngine.prepare()
-        do {
-            try audioEngine.start()
-        } catch {
-            statusMessage = "Could not start microphone."
-        }
+        try audioEngine.start()
     }
 
     private func writeBufferToFileIfNeeded(_ buffer: AVAudioPCMBuffer) {
@@ -259,61 +357,78 @@ final class SpeechTranscriber: ObservableObject {
         }
     }
 
-    // MARK: - Recognition Task (restart-safe)
-    private func startRecognitionTask(recognizer: SFSpeechRecognizer) {
-        task?.cancel()
-        task = nil
+    // MARK: - Speech framework lifecycle
 
-        let r = SFSpeechAudioBufferRecognitionRequest()
-        r.shouldReportPartialResults = true
-        r.requiresOnDeviceRecognition = true
-        request = r
-
-        task = recognizer.recognitionTask(with: r) { [weak self] result, error in
-            guard let self else { return }
-
-            if let result {
-                self.transcript = result.bestTranscription.formattedString
-                self.checkExpectedPhraseMatch()
-            }
-
-            if let error {
-                let msg = error.localizedDescription
-                if msg.lowercased().contains("no speech detected") {
-                    self.statusMessage = nil
-                    self.restartRecognition(recognizer: recognizer)
-                    return
-                }
-                self.statusMessage = "Recognition paused: \(msg)"
-                self.restartRecognition(recognizer: recognizer)
-            }
-        }
+    /// Send a buffer only to the active recognition request. This lock also
+    /// serializes endAudio() with append(), preventing request-replacement races.
+    /// The critical section is tiny and contains no SwiftUI work.
+    private func appendAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        bufferRequestLock.lock()
+        bufferRequest?.append(buffer)
+        bufferRequestLock.unlock()
     }
 
-    private func restartRecognition(recognizer: SFSpeechRecognizer) {
+    private func replaceBufferRequest(with next: SFSpeechAudioBufferRecognitionRequest?) {
+        bufferRequestLock.lock()
+        let previous = bufferRequest
+        bufferRequest = next
+        previous?.endAudio()
+        bufferRequestLock.unlock()
+    }
+
+    private func closeRecognitionRequest() {
+        replaceBufferRequest(with: nil)
+        request = nil
+    }
+
+    private func startRecognitionTask(recognizer: SFSpeechRecognizer) {
+        // Invalidate old callbacks *before* cancelling the previous task.
+        recognitionGenerationID = UUID()
+        let generation = recognitionGenerationID
         task?.cancel()
         task = nil
-        request?.endAudio()
-        request = nil
 
-        let r = SFSpeechAudioBufferRecognitionRequest()
-        r.shouldReportPartialResults = true
-        r.requiresOnDeviceRecognition = true
-        request = r
+        let nextRequest = SFSpeechAudioBufferRecognitionRequest()
+        nextRequest.shouldReportPartialResults = true
+        nextRequest.requiresOnDeviceRecognition = true
+        request = nextRequest
+        replaceBufferRequest(with: nextRequest)
 
-        task = recognizer.recognitionTask(with: r) { [weak self] result, error in
-            guard let self else { return }
-            if let result {
-                self.transcript = result.bestTranscription.formattedString
-                self.checkExpectedPhraseMatch()
-            }
-            if let error {
-                let msg = error.localizedDescription
-                if msg.lowercased().contains("no speech detected") {
-                    self.statusMessage = nil
-                    return
+        task = recognizer.recognitionTask(with: nextRequest) { [weak self] result, error in
+            // SFSpeechRecognizer does not guarantee a main-thread callback.
+            // All @Published mutations and Speech task transitions stay on main.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isRecording,
+                      self.recognitionGenerationID == generation else { return }
+
+                if let result {
+                    self.transcript = result.bestTranscription.formattedString
+                    self.checkExpectedPhraseMatch()
                 }
-                self.statusMessage = "Recognition paused: \(msg)"
+
+                if let error {
+                    let nsError = error as NSError
+                    // A cancelled task must never turn into a failure popup.
+                    if nsError.domain == "kLSRErrorDomain" && nsError.code == 301 {
+                        return
+                    }
+                    if let issue = SpeechRecognitionIssue.from(error: nsError) {
+                        // Connection failures (1101/1107/4097) are not silence.
+                        // Stop fully, surface one alert, and wait for a user retry.
+                        self.stop()
+                        self.report(issue)
+                        return
+                    }
+                    // Code 1110 is ordinary no-speech detection, not a
+                    // permission problem. Limit automatic recovery attempts.
+                    if self.silenceRecoveryCount < self.maximumSilenceRecoveries {
+                        self.silenceRecoveryCount += 1
+                        self.startRecognitionTask(recognizer: recognizer)
+                    } else {
+                        self.stop()
+                        self.statusMessage = "I couldn't hear speech. Tap the mic to try again."
+                    }
+                }
             }
         }
     }
@@ -326,7 +441,7 @@ final class SpeechTranscriber: ObservableObject {
         guard didMatchExpectedPhrase == false else { return }
         guard expectedWords.isEmpty == false else { return }
 
-        let spoken = Self.words(from: transcript)
+        let spoken = SpeechWordMatcher.words(from: transcript, expected: expectedWords)
         guard spoken.isEmpty == false else { return }
 
         // Subsequence match ratio
@@ -378,9 +493,9 @@ final class SpeechTranscriber: ObservableObject {
         let minLen = min(la, lb)
 
         // Prefix similarity (helps with partial SR tokens)
-        if minLen >= 3 {
+        if minLen >= 5 && abs(la - lb) <= 1 {
             let pref = commonPrefixLength(a, b)
-            let need = max(3, Int(round(Double(minLen) * 0.60)))
+            let need = max(4, Int(round(Double(minLen) * 0.80)))
             if pref >= need { return true }
         }
 
@@ -442,48 +557,54 @@ final class SpeechTranscriber: ObservableObject {
         return prev[m]
     }
 
-    private static func words(from input: String) -> [String] {
-        let lower = input.lowercased()
-        let cleaned = lower
-            .replacingOccurrences(of: "[^a-z\\s']", with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if cleaned.isEmpty { return [] }
-        return cleaned.split(separator: " ").map { String($0) }
-    }
-
     // MARK: - Level + Onset
-    private func updateLevelAndOnset(from buffer: AVAudioPCMBuffer) {
+    private func updateLevelAndOnset(from buffer: AVAudioPCMBuffer, generation: UUID) {
         guard let channel = buffer.floatChannelData?.pointee else { return }
         let n = Int(buffer.frameLength)
-        if n == 0 { return }
+        guard n > 0 else { return }
 
         var sum: Float = 0
         for i in 0..<n {
-            let s = channel[i]
-            sum += s * s
+            let value = channel[i]
+            sum += value * value
         }
 
         let rms = sqrt(sum / Float(n))
         let normalized = min(max(rms * 10, 0), 1)
-
         let metrics = onsetAnalyzer.process(rms: rms)
+        // Commit completed results synchronously on the tap side. Otherwise a
+        // phrase-match callback can stop the mic before the UI receives them.
+        if let metrics {
+            onsetEvidence.recordCompleted(metrics, generation: generation)
+        }
 
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.isRecording,
+                  self.audioSessionGenerationID == generation else { return }
 
-            self.rawRMS = rms
-            self.audioLevel = normalized
-            self.voicing = normalized
-            self.isSpeaking = normalized > self.speakingThreshold
+            let now = Date.timeIntervalSinceReferenceDate
+            if now - self.lastLevelPublishTime >= self.levelPublishInterval {
+                self.lastLevelPublishTime = now
+                self.rawRMS = rms
+                self.audioLevel = normalized
+                self.voicing = normalized
 
-            if let m = metrics {
-                self.onsetScore = m.score
-                self.onsetKind = m.kind
-                self.onsetVerdict = m.verdict
-                self.onsetHint = m.hint
-                self.onsetConfidence = m.confidence
-                self.onsetDebug = m.debug
+                // A natural pause between words is not the end of an attempt.
+                if normalized > self.speakingThreshold {
+                    self.lastActiveSpeechTime = now
+                    if !self.isSpeaking { self.isSpeaking = true }
+                } else if self.isSpeaking,
+                          now - self.lastActiveSpeechTime >= self.speechHangover {
+                    self.isSpeaking = false
+                }
+            }
+
+            // The audio tap may detect multiple acoustic starts in one phrase.
+            // Display the SAME first completed result used at auto-stop rather
+            // than allowing later words to overwrite the early-onset verdict.
+            if metrics != nil,
+               let first = self.onsetEvidence.snapshot(generation: generation) {
+                self.applyOnsetMetrics(first)
             }
         }
     }

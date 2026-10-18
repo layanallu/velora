@@ -2,7 +2,7 @@
 //  ProgressTimelineView.swift
 //  Velora
 //
-//  Top timeline shown ONLY during the live practice engine (SessionView).
+//  Shared journey timeline across breathing, ready, and live practice.
 //  Timeline steps:
 //   1) Breathing (already completed when SessionView appears)
 //   2) Easy Onset
@@ -40,7 +40,7 @@ struct ProgressTimelineView: View {
 
     let steps: [Step]
 
-    // MARK: - Tuning (you can tweak fast)
+    // MARK: - Tuning (preserves the existing timeline geometry)
 
     var nodeSize: CGFloat = 33
 
@@ -138,7 +138,7 @@ private struct TimelineNodeView: View {
             face
                 .frame(width: size, height: size)
                 .clipped()
-                .opacity(step.state == .upcoming ? 0.35 : 0.82)
+                .opacity(step.state == .upcoming ? 0.30 : 0.82)
         }
         .frame(width: size, height: size)
         .overlay(alignment: .top) {
@@ -169,7 +169,8 @@ private struct TimelineNodeView: View {
                 )
             )
         case .upcoming:
-            return AnyShapeStyle(AppTheme.paper.opacity(0.55))
+            // Upcoming faces are resting, not active: use a quiet neutral gray.
+            return AnyShapeStyle(AppTheme.ink.opacity(0.07))
         }
     }
 
@@ -255,15 +256,15 @@ private struct TimelineNodeView: View {
                 .position(x: size * 0.50, y: size * 0.64)
 
             // ✅ Blush only in Rhythm (more visible)
-            if step.kind == .rhythm {
+            if step.kind == .rhythm && step.state != .upcoming {
                 HStack(spacing: size * 0.34) {
                     Circle()
-                        .fill(Color.pink.opacity(step.state == .upcoming ? 0.20 : 0.40))
+                        .fill(AppTheme.aqua.opacity(0.33))
                         .frame(width: size * 0.16, height: size * 0.16)
                         .blur(radius: 2.2)
 
                     Circle()
-                        .fill(Color.pink.opacity(step.state == .upcoming ? 0.20 : 0.40))
+                        .fill(AppTheme.aqua.opacity(0.33))
                         .frame(width: size * 0.16, height: size * 0.16)
                         .blur(radius: 2.2)
                 }

@@ -9,6 +9,8 @@
 //  ✅ Same character size + same vertical placement as BreathingGateView for seamless crossfade
 //  ✅ Removed topic card (topic already shown in nav title)
 //  ✅ Excited but calm expression
+//  Exit button and exit sheet are owned by BreathingGateView, which
+//  crossfades into this view. Avoid duplicate controls on Ready to Start.
 //
 
 
@@ -21,11 +23,23 @@ struct ScenarioStartView: View {
 
     @State private var goSession: Bool = false
 
+    private var readyTimelineSteps: [ProgressTimelineView.Step] {
+        [
+            .init(title: "Breathing", state: .done, kind: .breathing),
+            .init(title: "Easy Onset", state: .current, kind: .easyOnset),
+            .init(title: "Rhythm", state: .upcoming, kind: .rhythm)
+        ]
+    }
+
     var body: some View {
         ZStack {
             AppTheme.background.ignoresSafeArea()
 
             VStack(spacing: 0) {
+                // Keep the journey visible after breathing, before tapping Start.
+                // Easy Onset is highlighted as the next technique to begin.
+                ProgressTimelineView(steps: readyTimelineSteps, nodeSize: 33)
+
                 Spacer(minLength: 8)
 
                 VeloraCharacterView(
@@ -69,10 +83,15 @@ struct ScenarioStartView: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 50)
             }
+
         }
         .navigationTitle(topic.title)
         .navigationBarTitleDisplayMode(.inline)
+        // The shared journey timeline, not the native navigation bar, is the header.
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
     }
+
 }
 
 struct ScenarioStartView_Previews: PreviewProvider {
