@@ -16,6 +16,7 @@
 //
 
 import Foundation
+import CoreFoundation
 
 struct OnsetMetrics: Equatable {
 
@@ -57,7 +58,7 @@ final class OnsetAnalyzer {
     private let minThreshold: Float = 0.005    // was 0.006
 
     // Capture windows
-    private let maxCaptureSec: Double = 0.55
+    private let maxCaptureSec: Double = 0.45  // Experimental 0.45s capture window; compare against v1.8 on device.
     private let stabilityWindowSec: Double = 0.22
 
     // Rise-time targets (ms) — wider window (less strict)

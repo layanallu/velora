@@ -8,7 +8,7 @@
 //  - In Playback mode: tap toggles play/pause.
 //  - If user pauses OR audio finishes: auto-return to Velora.
 //  - Layout fix: underHeroText lives inside the hero container (no weird gap).
-//  - Visual fix: radial alpha mask to remove “square layer” feel around Canvas glow.
+//  - Visual fix: radial alpha mask to remove "square layer" feel around Canvas glow.
 //
 //  ✅ Navigation Fix (28/02/2026):
 //  - Home button resets NavigationStack via AppRouter (prevents resuming old Topic).
@@ -18,7 +18,14 @@
 //    avoiding SwiftUI render conflicts (prevents hangs).
 //
 //  Updated by Velora on 28/02/2026:
-//  ✅ Removed "We’ll enable..." message when no recording.
+//  ✅ Removed "We'll enable..." message when no recording.
+//
+//  ─── PRESENTER ONLY ──────────────────────────────────────────────────────────
+//  Demo mode: tapping Velora plays a bundled voice sample (DemoVoice.mp3)
+//  so the playback orb feature is fully demonstrated without a real recording.
+//  File location: Component/TechniqueExample/DemoVoice.mp3
+//  To remove: delete the demoAudioURL computed var + the isDemo branch in preparePlaybackIfPossible()
+//  ─────────────────────────────────────────────────────────────────────────────
 //
 
 import SwiftUI
@@ -26,10 +33,10 @@ import SwiftUI
 struct FeedbackView: View {
     @Environment(\.dismiss) private var dismiss
 
-    /// ✅ Provided by RootView (central router)
     @EnvironmentObject private var router: AppRouter
 
     let record: SessionRecord
+    var mode: SessionMode = .normal
 
     var onRepeat: (() -> Void)? = nil
     var onBackHome: (() -> Void)? = nil
@@ -37,7 +44,6 @@ struct FeedbackView: View {
     @State private var isPlaybackMode: Bool = false
     @StateObject private var playback = AudioPlayback()
 
-    // Hero sizing:
     private let heroCanvasSize: CGFloat = 220
     private let heroVisualSize: CGFloat = 170
 
@@ -75,7 +81,6 @@ struct FeedbackView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Velora Playback")
 
-                    // ✅ Only show the line if not empty (prevents weird gap)
                     if underHeroText.isEmpty == false {
                         Text(underHeroText)
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -133,7 +138,12 @@ struct FeedbackView: View {
         }
         .navigationBarBackButtonHidden(true)
         .onAppear { preparePlaybackIfPossible() }
-        .onDisappear { playback.pause() }
+        .onDisappear {
+            playback.unload()
+            if !mode.isDemo {
+                AudioRecorder.cleanupMergedRecording(named: record.audioFilename)
+            }
+        }
         .onChange(of: playback.didFinish) { finished in
             guard finished else { return }
             withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) {
@@ -142,14 +152,12 @@ struct FeedbackView: View {
         }
     }
 
-    // MARK: - Safe Home Reset (prevents hangs)
+    // MARK: - Safe Home Reset
 
     private func goHomeHardResetSafely() {
-        // 1) Stop heavy things first (audio + orb)
         playback.pause()
         isPlaybackMode = false
 
-        // 2) Reset stack safely on next runloop tick
         DispatchQueue.main.async {
             if let onBackHome {
                 onBackHome()
@@ -159,7 +167,7 @@ struct FeedbackView: View {
         }
     }
 
-    // MARK: - Orb view
+    // MARK: - Orb View
 
     private var orbView: some View {
         WaveformMiniView(level: Float(playback.level), isActive: playback.isPlaying)
@@ -181,16 +189,23 @@ struct FeedbackView: View {
             }
     }
 
-    // MARK: - UI strings
+    // MARK: - UI Strings
 
     private var underHeroText: String {
-        // ✅ If no recording, show nothing (clean)
+        // In demo mode, always show the tap hint (no real recording needed)
+        if mode.isDemo {
+            if isPlaybackMode {
+                return playback.isPlaying ? "Playing your Rhythm…" : "Tap me to listen."
+            }
+            return "Tap me to listen."
+        }
+
+        // Normal mode: only show if there's a real recording
         guard record.audioFilename != nil else { return "" }
 
         if isPlaybackMode {
             return playback.isPlaying ? "Playing your Rhythm…" : "Tap me to listen."
         }
-
         return "Tap me to listen."
     }
 
@@ -225,11 +240,11 @@ struct FeedbackView: View {
         }
     }
 
-    // MARK: - Hero behavior
+    // MARK: - Hero Tap Behavior
 
     private func handleHeroTap() {
-        guard record.audioFilename != nil else { return }
-
+        // Both demo and normal mode use the same orb behavior —
+        // the only difference is the audio source (demo = bundled file)
         if isPlaybackMode {
             if playback.isPlaying {
                 playback.pause()
@@ -247,38 +262,42 @@ struct FeedbackView: View {
         }
     }
 
-    // MARK: - Playback wiring
+    // MARK: - Playback Setup
 
     private func preparePlaybackIfPossible() {
-        guard let filename = record.audioFilename else { return }
-        let url = audioURL(for: filename)
-        if FileManager.default.fileExists(atPath: url.path) {
-            playback.load(url: url)
+        // ─── PRESENTER ONLY ──────────────────────────────────────────────────
+        // Demo mode: load bundled DemoVoice.mp3 so the orb works in presentations.
+        if mode.isDemo {
+            if let url = demoAudioURL {
+                playback.load(url: url)
+            }
+            return
         }
+        // ─────────────────────────────────────────────────────────────────────
+
+        // Normal mode: load the user's real recording
+        guard let filename = record.audioFilename,
+              let url = AudioRecorder.recordingURL(for: filename),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        playback.load(url: url)
     }
 
-    private func audioURL(for filename: String) -> URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let docsURL = docs
-            .appendingPathComponent("VeloraRecordings", isDirectory: true)
-            .appendingPathComponent(filename)
+    // ─── PRESENTER ONLY ──────────────────────────────────────────────────────
+    // Resolves the bundled demo voice file.
+    // File must be added to the Xcode target with the name "DemoVoice" and extension "mp3".
+    // Location in project: Component/TechniqueExample/DemoVoice.mp3
+    // To remove: delete this computed var + the isDemo branch in preparePlaybackIfPossible()
 
-        if FileManager.default.fileExists(atPath: docsURL.path) {
-            return docsURL
-        }
-
-        let name = (filename as NSString).deletingPathExtension
-        let ext  = (filename as NSString).pathExtension.isEmpty ? "caf" : (filename as NSString).pathExtension
-
-        if let bundleURL = Bundle.main.url(forResource: name, withExtension: ext) {
-            return bundleURL
-        }
-
-        return docsURL
+    private var demoAudioURL: URL? {
+        Bundle.main.url(forResource: "DemoVoice", withExtension: "mp3")
     }
+    // ─────────────────────────────────────────────────────────────────────────
+
+
 }
 
 // MARK: - Preview
+
 #Preview {
     let router = AppRouter()
 
@@ -292,8 +311,9 @@ struct FeedbackView: View {
                 rhythm: 88,
                 confidence: 79,
                 suggestion: "That was calm and steady. Keep that gentle start.",
-                audioFilename: "My Name Is.m4a"
+                audioFilename: nil
             ),
+            mode: .demoPreview,
             onRepeat: {},
             onBackHome: { router.goHome() }
         )

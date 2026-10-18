@@ -48,12 +48,21 @@ struct SessionView: View {
     @State private var showTechniqueIntro: Bool = false
     @State private var techniqueIntroKind: TechniqueKind = .easyOnset
 
+    // A soft exit is available during the training flow without changing the
+    // phase layout or pushing the timeline out of alignment.
+    @State private var showExitConfirmation: Bool = false
+    @State private var isLeavingSession: Bool = false
+
     // MARK: - Gift Points
     private let giftPoints: Int = 15
 
     var body: some View {
-        ZStack {
-            AppTheme.background.ignoresSafeArea()
+        // GeometryReader is sized by the visible iPhone viewport. The large
+        // Easy Onset character is intentionally allowed to extend offscreen,
+        // but must never determine the position of navigation controls.
+        GeometryReader { viewport in
+            ZStack {
+                AppTheme.background.ignoresSafeArea()
 
             VStack(spacing: 0) {
                 if phase != .feedback {
@@ -63,6 +72,7 @@ struct SessionView: View {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .allowsHitTesting(!showTechniqueIntro && !showExitConfirmation)
 
             if showTechniqueIntro {
                 TechniqueIntroOverlay(
@@ -72,8 +82,42 @@ struct SessionView: View {
                 .transition(.opacity)
                 .zIndex(999)
             }
+
+            }
+            // Center the existing session experience in the viewport while
+            // keeping its potentially oversize decorative character clipped
+            // to the viewport for geometry purposes only.
+            .frame(width: viewport.size.width, height: viewport.size.height)
+        }
+        // The exit button belongs to the viewport, NOT to the inner ZStack:
+        // a 720-pt decorative view cannot push it off the screen any more.
+        .overlay(alignment: .topTrailing) {
+            if !showTechniqueIntro && !showExitConfirmation && phase != .feedback {
+                SessionExitButton(action: presentExitConfirmation)
+                    .padding(.top, 2)
+                    .padding(.trailing, 3)
+            }
+        }
+        // Anchored in the GeometryReader viewport above (not the 720-point
+        // decorative character), the same exit surface used in Breathing.
+        .overlay {
+            if showExitConfirmation {
+                SessionExitConfirmationOverlay(
+                    title: exitOverlayTitle,
+                    message: exitOverlayMessage,
+                    onKeepPracticing: resumeSession,
+                    onLeave: leaveSession
+                )
+                .zIndex(1000)
+            }
         }
         .navigationBarBackButtonHidden(true)
+        .onDisappear {
+            // Backup cleanup for interrupted navigation or an early session exit.
+            if !mode.isDemo {
+                AudioRecorder.cleanupMergedRecording(named: rhythmAudioFilename)
+            }
+        }
     }
 
     @ViewBuilder
@@ -109,7 +153,7 @@ struct SessionView: View {
                 onMetrics: { metrics in
                     easyMetrics = metrics
                 },
-                isTechniqueIntroPresented: showTechniqueIntro,
+                isTechniqueIntroPresented: showTechniqueIntro || showExitConfirmation || isLeavingSession,
                 requestTechniqueIntro: { markSeen in
                     presentTechniqueIntro(.easyOnset, markSeen: markSeen)
                 }
@@ -157,7 +201,7 @@ struct SessionView: View {
                 onAudioFilename: { filename in
                     rhythmAudioFilename = filename
                 },
-                isTechniqueIntroPresented: showTechniqueIntro,
+                isTechniqueIntroPresented: showTechniqueIntro || showExitConfirmation || isLeavingSession,
                 requestTechniqueIntro: { markSeen in
                     presentTechniqueIntro(.rhythm, markSeen: markSeen)
                 }
@@ -175,6 +219,7 @@ struct SessionView: View {
                     suggestion: supportiveSuggestion(),
                     audioFilename: rhythmAudioFilename
                 ),
+                mode: mode,
                 onRepeat: {
                     Haptics.tap()
                     dismiss()
@@ -188,6 +233,49 @@ struct SessionView: View {
                 }
             )
         }
+    }
+
+
+
+    private var exitOverlayTitle: String {
+        switch phase {
+        case .easyOnset: return "Leave Easy Onset?"
+        case .rhythmPacing: return "Leave Rhythm?"
+        case .feedback: return "Leave session?"
+        }
+    }
+
+    private var exitOverlayMessage: String {
+        switch phase {
+        case .easyOnset:
+            return "Your Easy Onset progress will restart next time."
+        case .rhythmPacing:
+            return "Your Rhythm progress will restart next time."
+        case .feedback:
+            return "Your progress in this practice won't be saved."
+        }
+    }
+
+    private func presentExitConfirmation() {
+        guard !showTechniqueIntro && !showExitConfirmation && phase != .feedback else { return }
+        Haptics.tap()
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.90)) {
+            showExitConfirmation = true
+        }
+    }
+
+    private func resumeSession() {
+        withAnimation(.spring(response: 0.30, dampingFraction: 0.92)) {
+            showExitConfirmation = false
+        }
+        // Easy Onset / Rhythm already observe the exit flag to resume safely.
+    }
+
+    private func leaveSession() {
+        Haptics.tap()
+        isLeavingSession = true  // Avoid reactivating a microphone while navigating home.
+        showExitConfirmation = false
+        goHomeSafely()
     }
 
     private func goHomeSafely() {

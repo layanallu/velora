@@ -46,7 +46,9 @@ struct RhythmPacingView: View {
     @StateObject private var transcriber = SpeechTranscriber()
 
     @State private var isListening: Bool = false
-    @State private var showMicDeniedAlert: Bool = false
+    @State private var isStarting: Bool = false
+    @State private var isActiveScreen: Bool = false
+    @State private var speechRecoveryIssue: SpeechRecognitionIssue? = nil
 
     @State private var clauses: [ParagraphPacingTextView.Clause] = []
     @State private var clauseIndex: Int = 0
@@ -57,6 +59,11 @@ struct RhythmPacingView: View {
     /// Tracks how far we've "consumed" the SR transcript.
     /// This makes progression word-by-word instead of "repeat full sentence".
     @State private var lastMatchedSpokenIndex: Int = 0
+
+    // Apple may deliver several recognized words in a single partial result.
+    // Keep their evidence, then animate progress one bubble per gentle beat.
+    // This also handles "I'm" being recognized for displayed "I am".
+    @State private var confirmedWordProgress: Int = 0
 
     @State private var hint: String = "Tap the mic to start."
     @State private var lastPopTime: CFTimeInterval = 0
@@ -113,6 +120,7 @@ struct RhythmPacingView: View {
             }
         }
         .onAppear {
+            isActiveScreen = true
             buildClauses()
             reset()
 
@@ -123,7 +131,14 @@ struct RhythmPacingView: View {
                 requestTechniqueIntro(true)
             }
         }
-        .onDisappear { stopListening() }
+        .onDisappear {
+            isActiveScreen = false
+            speechRecoveryIssue = nil
+            stopListening()
+            // Normal completion already removed these; leaving early must too.
+            AudioRecorder.cleanup(segmentURLs)
+            segmentURLs.removeAll()
+        }
         .onChange(of: isTechniqueIntroPresented) { presented in
             handleFreezeChange(presented)
         }
@@ -133,16 +148,32 @@ struct RhythmPacingView: View {
             guard isListening else { return }
             handleTranscriptUpdate(newValue)
         }
+        .onChange(of: transcriber.isRecording) { _, recording in
+            guard mode.isDemo == false else { return }
+            if !recording && isListening {
+                stopListening()
+                hint = transcriber.statusMessage ?? "Listening stopped. Tap to try again."
+            }
+        }
         .onReceive(sampleTimer) { _ in
             guard mode.isDemo == false else { return }
             guard isFrozen == false else { return }
+            // Never lose correctly recognized words just because Apple sent
+            // them all in a single callback before the next bubble animation.
+            if popped < confirmedWordProgress {
+                popTo(popped + 1, total: currentClauseSpeakableCount)
+            }
             guard isListening else { return }
             rmsSamples.append(transcriber.rawRMS)
         }
-        .alert("Microphone Access Needed", isPresented: $showMicDeniedAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Please allow microphone + speech recognition access in Settings so Velora can listen.")
+        .onChange(of: transcriber.recoveryIssue) { _, issue in
+            guard isActiveScreen, !mode.isDemo else { return }
+            if let issue { speechRecoveryIssue = issue }
+        }
+        .speechRecoveryAlert(issue: $speechRecoveryIssue) {
+            guard isActiveScreen, !mode.isDemo else { return }
+            transcriber.clearRecoveryIssue()
+            startListening()
         }
         .task {
             if mode.isDemo == false {
@@ -204,6 +235,11 @@ struct RhythmPacingView: View {
             return "Tap the mic, then double-tap to continue."
         }
 
+        if let message = transcriber.statusMessage { return message }
+        if !transcriber.isAuthorized { return "Microphone and speech access needed." }
+        if !transcriber.supportsOnDevice {
+            return "English speech recognition isn't available offline on this device."
+        }
         return hint
     }
 
@@ -236,12 +272,12 @@ struct RhythmPacingView: View {
                     .font(.system(size: 22, weight: .bold))
                     .foregroundStyle(AppTheme.ink.opacity(0.75))
             }
-            .opacity(isFrozen ? 0.40 : 1.0)
+            .opacity((isFrozen || isStarting) ? 0.40 : 1.0)
             .scaleEffect(isListening ? 1.05 : 1.0)
             .animation(.spring(response: 0.28, dampingFraction: 0.82), value: isListening)
         }
         .buttonStyle(.plain)
-        .disabled(isFrozen)
+        .disabled(isFrozen || isStarting)
         .accessibilityLabel(isListening ? "Stop microphone" : "Start microphone")
     }
 
@@ -253,22 +289,32 @@ struct RhythmPacingView: View {
             return
         }
 
+        guard !isStarting && isActiveScreen else { return }
+        isStarting = true
         Task { @MainActor in
-            if transcriber.isAuthorized == false { await transcriber.requestPermissions() }
+            defer { isStarting = false }
+            if !transcriber.isAuthorized { await transcriber.requestPermissions() }
+            // The permission sheet may outlive the session screen.
+            guard isActiveScreen && !isFrozen && !isListening else { return }
 
             guard transcriber.isAuthorized else {
-                showMicDeniedAlert = true
+                speechRecoveryIssue = .permissionRequired
+                return
+            }
+
+            transcriber.resetTranscript()
+            lastMatchedSpokenIndex = 0
+            confirmedWordProgress = popped
+
+            // Do not allocate any audio file unless Speech started successfully.
+            guard transcriber.start() else {
+                isListening = false
                 return
             }
 
             let segURL = AudioRecorder.makeSegmentURL()
             segmentURLs.append(segURL)
             transcriber.startFileRecording(to: segURL)
-
-            transcriber.resetTranscript()
-            lastMatchedSpokenIndex = 0
-
-            transcriber.start()
             isListening = true
             hint = "Speak gently… focus on the highlighted word."
         }
@@ -282,7 +328,7 @@ struct RhythmPacingView: View {
             return
         }
 
-        transcriber.stopFileRecording()
+        // stop() shuts down the mic before closing the segment writer.
         transcriber.stop()
         hint = "Tap the mic to start."
     }
@@ -306,20 +352,27 @@ struct RhythmPacingView: View {
         let spoken = normalizedWords(from: transcript)
         guard spoken.isEmpty == false else { return }
 
-        let nextExpectedIndex = popped
-        guard nextExpectedIndex >= 0, nextExpectedIndex < expected.count else { return }
-        let target = expected[nextExpectedIndex]
-
-        if lastMatchedSpokenIndex > spoken.count { lastMatchedSpokenIndex = 0 }
-
-        if let matchEndIndex = findNextMatchEndIndex(
-            spoken: spoken,
-            startIndex: lastMatchedSpokenIndex,
-            target: target
-        ) {
-            lastMatchedSpokenIndex = matchEndIndex
-            popTo(popped + 1, total: expected.count)
+        if lastMatchedSpokenIndex > spoken.count {
+            // Apple revised the partial transcript. Re-align from the start
+            // without undoing words that were already shown as completed.
+            lastMatchedSpokenIndex = 0
+            confirmedWordProgress = popped
         }
+
+        var cursor = lastMatchedSpokenIndex
+        var confirmed = max(popped, confirmedWordProgress)
+        while confirmed < expected.count,
+              let matchEnd = findNextMatchEndIndex(
+                  spoken: spoken,
+                  startIndex: cursor,
+                  target: expected[confirmed]
+              ) {
+            confirmed += 1
+            cursor = matchEnd
+        }
+        lastMatchedSpokenIndex = cursor
+        confirmedWordProgress = confirmed
+        // The timer animates the confirmed words at the existing pulse pace.
     }
 
     private func popTo(_ newCount: Int, total: Int) {
@@ -357,6 +410,8 @@ struct RhythmPacingView: View {
                     self.clauseIndex += 1
                     self.wordIndexInClause = 0
                     self.popped = 0
+                    self.confirmedWordProgress = 0
+                    self.lastMatchedSpokenIndex = 0
                 }
 
                 if self.mode.isDemo == false {
@@ -385,6 +440,7 @@ struct RhythmPacingView: View {
         onAudioFilename?(out?.lastPathComponent)
 
         AudioRecorder.cleanup(segmentURLs)
+        segmentURLs.removeAll()
 
         onMetrics?(RhythmMetrics(rmsSamples: rmsSamples))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { onComplete() }
@@ -401,6 +457,7 @@ struct RhythmPacingView: View {
         wordIndexInClause = 0
         popped = 0
         lastMatchedSpokenIndex = 0
+        confirmedWordProgress = 0
         hint = "Tap the mic to start."
     }
 
@@ -482,17 +539,12 @@ struct RhythmPacingView: View {
     }
 
     private func normalizedWords(from input: String) -> [String] {
-        let lower = input.lowercased()
-        let cleaned = lower
-            .replacingOccurrences(of: "[^a-z\\s']", with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if cleaned.isEmpty { return [] }
-
-        return cleaned
-            .split(separator: " ", omittingEmptySubsequences: true)
-            .map { normalizeWord(String($0)) }
-            .filter { !$0.isEmpty }
+        // Resolve Apple's spelling variants against the words on screen.
+        // For example: "I'm" -> ["i", "am"] and "3" -> ["three"].
+        return SpeechWordMatcher.words(
+            from: input,
+            expected: expectedSpeakableWordsForCurrentClause()
+        )
     }
 
     private func findNextMatchEndIndex(spoken: [String], startIndex: Int, target: String) -> Int? {
@@ -520,9 +572,7 @@ struct RhythmPacingView: View {
     }
 
     private func wordsAreClose(_ a: String, _ b: String) -> Bool {
-        if a == b { return true }
-        if a.hasPrefix(b) || b.hasPrefix(a) { return true }
-        return false
+        return a == b
     }
 }
 
